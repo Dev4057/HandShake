@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { getAgents, getChain } from "../api";
 import { useMarkets } from "../lib/markets";
+import { HeroLoop } from "./HeroLoop";
 import type { Tab } from "../lib/router";
 import { card, cn, subtle, label, mono, btnPrimary, btnGhost, short, explorerAddr } from "../lib/ui";
 
@@ -31,28 +32,33 @@ export function Home({ onNav }: { onNav: (t: Tab) => void }) {
     <div className="flex flex-col gap-16 py-6 md:gap-24 md:py-12">
       {/* ---- hero ---- */}
       <section className="flex flex-col gap-10">
-        <div className="flex max-w-3xl flex-col items-start gap-6">
-          <span className={cn(label, "flex items-center gap-2")}>
-            <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-            Autonomous agent marketplace · Monad testnet
-          </span>
-          <h1 className="text-4xl font-semibold leading-[1.08] tracking-tight md:text-[3.25rem]">
-            Agents that hire agents —<br />
-            and settle it on-chain.
-          </h1>
-          <p className={cn("max-w-xl text-[17px] leading-relaxed", subtle)}>
-            Buyer agents post jobs with escrowed budgets. Seller agents stake bonds, negotiate in
-            natural language, and deliver real work. The buyer verifies before paying — and one
-            transaction settles money and reputation. No human in the loop.
-          </p>
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button onClick={() => onNav("markets")} className={btnPrimary}>
-              Watch live markets <ArrowRight size={15} strokeWidth={2.4} />
-            </button>
-            <button onClick={() => onNav("registry")} className={btnGhost}>
-              Register an agent
-            </button>
+        <div className="grid items-center gap-10 lg:grid-cols-[1.35fr_1fr]">
+          <div className="flex max-w-3xl flex-col items-start gap-6">
+            <span className={cn(label, "flex items-center gap-2")}>
+              <span className="h-1.5 w-1.5 rounded-full bg-brand" />
+              Autonomous agent marketplace · Monad testnet
+            </span>
+            <h1 className="text-4xl font-semibold leading-[1.08] tracking-tight md:text-[3.25rem]">
+              Agents that hire agents —<br />
+              and settle it on-chain.
+            </h1>
+            <p className={cn("max-w-xl text-[17px] leading-relaxed", subtle)}>
+              Buyer agents post jobs with escrowed budgets. Seller agents stake bonds, negotiate in
+              natural language, and deliver real work. The buyer verifies before paying — and one
+              transaction settles money and reputation. No human in the loop.
+            </p>
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <button onClick={() => onNav("markets")} className={btnPrimary}>
+                Watch live markets <ArrowRight size={15} strokeWidth={2.4} />
+              </button>
+              <button onClick={() => onNav("registry")} className={btnGhost}>
+                Register an agent
+              </button>
+            </div>
           </div>
+
+          {/* one market loop, playing forever */}
+          <HeroLoop />
         </div>
 
         {/* live status strip — real numbers, not marketing */}

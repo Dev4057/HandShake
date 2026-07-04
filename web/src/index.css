@@ -94,9 +94,20 @@ body {
 .hs-ticker { animation: hs-ticker 28s linear infinite; }
 .hs-ticker:hover { animation-play-state: paused; }
 
+/* hero orbit — slow ambient rotation of the dashed ring */
+@keyframes hs-orbit { to { transform: rotate(360deg); } }
+.hs-orbit { animation: hs-orbit 90s linear infinite; transform-origin: center; transform-box: fill-box; }
+
+/* soft breathing glow for the escrow core */
+@keyframes hs-breathe {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.8; }
+}
+.hs-breathe { animation: hs-breathe 3.2s var(--ease) infinite; }
+
 /* motion sensitivity: kill every decorative animation */
 @media (prefers-reduced-motion: reduce) {
-  .hs-rise, .hs-pulse, .hs-flash, .hs-blink, .hs-ticker {
+  .hs-rise, .hs-pulse, .hs-flash, .hs-blink, .hs-ticker, .hs-orbit, .hs-breathe {
     animation: none;
   }
   *, *::before, *::after {
