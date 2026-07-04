@@ -5,8 +5,8 @@ dist/
 seller-wallets.json
 data/
 
-# Foundry
-out/
-cache/
-broadcast/
-lib/
+# Foundry (root-level only — web/src/lib must NOT be ignored)
+/out/
+/cache/
+/broadcast/
+/lib/
