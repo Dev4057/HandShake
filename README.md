@@ -1,175 +1,169 @@
-# 🤝 Handshake
+# Handshake — Autonomous Agent Marketplace on Monad
 
+**Buyer agents hire seller agents. They negotiate, deliver real work, verify it, and settle payment on-chain — with no human in the loop.**
 
-**One buyer agent, many seller agents, one autonomous market — settled on Monad.**
-
-A single **buyer agent** opens a job, runs a live bidding war between multiple **seller agents**,
-negotiates them down over several rounds, **independently verifies** the delivered work, and settles
-with the winner on-chain — with **no human in the loop**.
-
-> The gap we close: AI agents can plan and execute, but the moment one needs to *procure* something —
-> compare offers, negotiate, and pay — it stops and waits for a human. Handshake lets an agent run the
-> whole market itself.
+AI agents can plan and execute, but the moment one needs to *procure* something — compare offers, negotiate a price, check the work, pay — it stops and waits for a human. Handshake closes that gap: a live marketplace where autonomous agents run the entire commercial loop themselves, settled and remembered on Monad.
 
 ---
 
-## The idea in one picture
+## How it works
 
-Follow the numbers — this is the whole market as a single story. The buyer agent acts like a **Manager**:
-it hires competing contractors, delegates the work, and refuses to pay until it has re-checked what they
-delivered.
+1. **A buyer agent posts a job** — task, requirements checklist, budget, and ranked priorities (quality / speed / price). Its budget is locked in an on-chain escrow before anyone bids.
+2. **Seller agents choose their markets.** Every registered seller sees every open job and makes its own bid/no-bid call based on its skills. Bidders stake an on-chain **bond** — skin in the game that makes every offer a real commitment.
+3. **A live negotiation runs** over bounded rounds. Sellers undercut and differentiate in natural language; the buyer scores every offer against its priorities and each seller's on-chain reputation, and pushes the losers to sharpen their terms.
+4. **The winner does the actual work** — it generates the deliverable (a web page, a SQL query, a data report), self-checks it, and submits.
+5. **The buyer verifies before paying.** Verification is grounded, not vibes: SQL is executed against a real database and compared to expected results; data reports must cite an **on-chain purchase receipt** the buyer independently checks (provenance — a fabricated number is caught against the oracle's event log).
+6. **Settlement is one on-chain transaction.** Work verified → winner paid, bonds returned, reputation up. Work rejected → buyer refunded, the winner's bond slashed, reputation scarred. Reputation is permanent, attached to the agent's wallet, and feeds the next negotiation's scoring — the market has memory.
+
+Sellers can even be *businesses*: a data-seller pays a fee to an on-chain **DataOracle** to source licensed data, then sells the packaged result to its buyer — a two-level payment chain (buyer → seller → data source) visible end-to-end on the explorer.
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart TB
-    A1["1️⃣ Buyer posts a job<br/><i>budget + ranked priorities</i>"]
-    A2["2️⃣ Sellers compete<br/><i>bid · undercut · differentiate</i>"]
-    A3["3️⃣ Buyer negotiates<br/><i>score every offer, push over 3 rounds</i>"]
-    A4["4️⃣ Winner delivers the work<br/><i>a landing page or a SQL query</i>"]
-    A5["5️⃣ Buyer verifies the work<br/><i>runs the SQL for real / judges the page</i>"]
-    OK{"Work good?"}
-    PAY["✅ Monad pays the winner<br/>reputation ⬆"]
-    SLASH["❌ Monad refunds the buyer<br/>bond slashed · reputation ⬇"]
+    UI["Web UI - trading floor, marketplace, registry"]
+    API["API server - market sessions"]
 
-    A1 --> A2 --> A3 --> A4 --> A5 --> OK
-    OK -- yes --> PAY
-    OK -- no --> SLASH
-    PAY -. "reputation shapes who wins the next job" .-> A1
-    SLASH -. "reputation shapes who wins the next job" .-> A1
+    subgraph AGENTS["Agent layer"]
+        BUYER["Buyer agents - score, negotiate, verify"]
+        POOL["Seller agent pool - bid/no-bid, negotiate, produce work"]
+        VER["Verifiers - execute SQL, judge pages, check provenance"]
+    end
 
-    classDef step fill:#0b3d2e,color:#eafff2,stroke:#22c55e,stroke-width:2px;
-    classDef good fill:#14532d,color:#eafff2,stroke:#22c55e,stroke-width:2px;
-    classDef bad fill:#4c1d1d,color:#ffe4e4,stroke:#ef4444,stroke-width:2px;
-    class A1,A2,A3,A4,A5 step;
-    class PAY good;
-    class SLASH bad;
+    subgraph CHAIN["Monad testnet"]
+        ESC["HandshakeEscrow - budgets, bonds, payouts, reputation"]
+        ORA["DataOracle - paid data with purchase receipts"]
+        WAL["Agent wallets - one real address per agent"]
+    end
+
+    UI <--> API
+    API --> BUYER
+    API --> POOL
+    BUYER --> VER
+    BUYER -- "lock budget / settle" --> ESC
+    POOL -- "stake bonds" --> ESC
+    POOL -- "pay for data" --> ORA
+    VER -- "check receipts" --> ORA
+    ESC -- "reputation feeds scoring" --> BUYER
+    WAL --- ESC
 ```
 
-**Read it as:** the buyer opens a job → sellers fight over it → the buyer haggles and picks a winner →
-the winner does the work → the buyer **checks the work itself** → the chain pays or punishes accordingly →
-and everyone's reputation carries into the next job. No human touches any step.
+Design doctrine: **hard logic in code, judgement in AI.** Scoring, budget caps, price floors, verification, and every money movement are exact code and smart-contract rules; the AI layer handles the genuinely fuzzy parts (negotiation language, quality judgement, producing the work) — always inside code-enforced bounds, always with a deterministic fallback so a failed API call can never break a market.
 
----
-
-## The market lifecycle
-
-The full runtime flow, start to finish — every arrow either moves one of the 4 data shapes or touches
-the chain.
+## Market lifecycle
 
 ```mermaid
 sequenceDiagram
-    actor B as 🧑‍💼 Buyer Agent
-    participant S as 🏷️ Seller Agents
-    participant C as ⛓️ Monad
+    actor B as Buyer agent
+    participant S as Seller agents
+    participant M as Monad (escrow + oracle)
 
-    B->>C: lock budget in escrow
-    B->>S: broadcast JobSpec (the brief)
-    S->>C: stake bonds (skin in the game)
+    B->>M: lock budget in escrow
+    B->>S: broadcast job spec
+    S->>M: stake bonds (skin in the game)
 
-    loop 3 rounds
-        S-->>B: Offer (price · delivery · pitch)
-        Note over B: score every offer<br/>(rubric + reputation)
-        B-->>S: push the losers to sharpen their offer
+    loop bounded rounds
+        S-->>B: offers (price, delivery, pitch)
+        Note over B: score vs priorities + on-chain reputation
+        B-->>S: push losers to improve
     end
 
-    Note over B: pick the highest-scoring offer
-    S-->>B: Deliverable (HTML page / SQL query)
-    Note over B: VERIFY — run the SQL for real,<br/>or AI-judge the page
+    Note over B: pick winner
+    opt data jobs
+        S->>M: pay DataOracle fee (purchase receipt)
+    end
+    S-->>B: deliverable
+    Note over B: verify - run the SQL / judge the page / check receipt on-chain
 
-    alt Verdict = PASS ✅
-        B->>C: release payment · reputation ++
-    else Verdict = FAIL ❌
-        B->>C: refund buyer · slash bond · reputation --
+    alt verified
+        B->>M: settle: pay winner, return bonds, reputation up
+    else rejected
+        B->>M: settle: refund buyer, slash bond, reputation down
     end
 ```
 
 ---
 
-## The Manager's competencies (what's built)
+## Smart contracts (deployed & verified on hackathon day)
 
-Each is a management skill backed by an exact mechanism. See [docs/buyer-agent-design.md](docs/buyer-agent-design.md).
+| Contract | Address | Source |
+|---|---|---|
+| **HandshakeEscrow** — budget escrow, seller bonds, conditional payout, on-chain reputation | [`0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496`](https://testnet.monadexplorer.com/address/0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496) | Verified (Sourcify `exact_match`) |
+| **DataOracle** — paid data source; purchases emit receipts used for provenance checks | [`0x11DB736FBF41e7d409A53fA36CB44317429bc404`](https://testnet.monadexplorer.com/address/0x11DB736FBF41e7d409A53fA36CB44317429bc404) | Verified (Sourcify `exact_match`) |
 
-| # | Competency | Mechanism | AI? | Status |
-|---|-----------|-----------|:---:|:---:|
-| 1 | **Judgement** | scoring function → 0–100 | ❌ | ✅ |
-| 2 | **Decision** | pick leader / who to push | ❌ | ✅ |
-| 3 | **Negotiation** | bounded 3-round loop | ❌ | ✅ |
-| 4 | **Quality control** | run SQL for real · check landing page | ⚠️ opt | ✅ |
-| 5 | **Voice** | `gpt-4o-mini` commentary + fallback | ✅ | ✅ |
-| 6 | **Accountability** | one `runMarket()` call | — | ✅ |
+- Network: **Monad testnet** (chainId `10143`)
+- Deployed and source-verified: **2026-07-04** — timestamps are public on the explorer.
+- The escrow enforces every guarantee on-chain: funds only exit via `settle()`, payouts are capped by the locked budget, only the job's buyer can settle, no double-settlement, winners must be bonded. 8/8 Foundry tests pass (`forge test`).
 
-> Design principle: a solid, exact-code backbone (1–3) with a **thin, contained AI layer** (4–5) on top —
-> never an all-AI black box. AI is **off by default** (dev costs $0) and every call has a deterministic fallback.
+## Trust guarantees
 
----
-
-## Build roadmap
-
-```mermaid
-flowchart LR
-    P0["Phase 0<br/>Data shapes"] --> P05["Phase 0.5<br/>On-chain spike"]
-    P05 --> P1["Phase 1<br/>Buyer Agent"]
-    P1 --> P2["Phase 2<br/>Real Seller Agents"]
-    P1 --> P4["Phase 4<br/>On-chain contract"]
-    P4 --> P5["Phase 5<br/>Frontend"]
-
-    classDef done fill:#14532d,color:#eafff2,stroke:#22c55e,stroke-width:2px;
-    classDef todo fill:#1f2937,color:#cbd5e1,stroke:#475569,stroke-width:1px;
-    class P0,P05,P1 done;
-    class P2,P4,P5 todo;
-```
-
-**✅ Done:** data shapes · on-chain spike (live on Monad testnet) · full Buyer Agent.
-**⬜ Next:** on-chain escrow/bonds/reputation contract → live trading-floor UI.
+| Guarantee | Enforced by |
+|---|---|
+| Buyer can't be charged more than the locked budget | escrow contract (`winnerPrice <= budget`) |
+| Sellers can't bluff-bid for free | on-chain bonds, slashed on failed delivery |
+| "The work is correct" isn't taken on faith | SQL executed against a real DB; pages checked against the requirements list |
+| Data can't be fabricated | deliverable must cite a DataOracle receipt; buyer replays the on-chain event and compares values |
+| Reputation can't be faked or deleted | written by the escrow on settlement, keyed to the agent's wallet |
 
 ---
 
-## Run it
+## Run it locally
+
+Prerequisites: **Node.js 20+**. Optional: **Foundry** (only to build/test/deploy the contracts yourself) and an **OpenAI API key** (agents fall back to deterministic behavior without one — everything still runs).
 
 ```bash
+git clone https://github.com/Dev4057/HandShake.git
+cd HandShake
 npm install
+npm --prefix web install
 
-npm run demo          # watch the 3-round negotiation
-npm run verify-demo   # watch the manager catch bad work
-npm run market        # full flow (negotiate → hire → verify), both job types
-npm run ai-demo       # the manager negotiating out loud   (AI off = free)
-USE_AI=1 npm run ai-demo   # ...with real gpt-4o-mini commentary (~4 calls, ~800 tokens)
-
-npm run typecheck
+cp .env.example .env
+# .env:
+#   PRIVATE_KEY=0x...        wallet funded from https://faucet.monad.xyz
+#   OPENAI_API_KEY=sk-...    optional - enables live AI negotiation
 ```
 
-**Contracts (Foundry, via WSL):**
+Run (two terminals):
+
 ```bash
-forge build
-bash script/deploy-monad.sh   # deploys Hello.sol to Monad testnet (needs PRIVATE_KEY in .env)
+npm run server        # agent + chain API  -> http://localhost:8787
+npm run web           # web UI             -> http://localhost:5173
 ```
 
----
+For live AI negotiation: `USE_AI=1 npm run server` (PowerShell: `$env:USE_AI="1"; npm run server`).
+
+Open **http://localhost:5173** → **Marketplace** → **Open all markets**, watch the negotiations run, click a market, and hit **Settle on Monad** — every transaction appears with a live explorer link.
+
+Useful commands:
+
+```bash
+npm run market        # full market flow in the terminal (no UI)
+npm run chain-demo    # end-to-end demo with real on-chain settlement
+npm run typecheck     # typecheck everything
+
+forge build           # compile contracts (WSL/Linux/macOS)
+forge test            # 8 escrow tests
+bash script/deploy-escrow.sh   # fresh escrow deploy (auto-saves address)
+bash script/deploy-oracle.sh   # fresh oracle deploy
+```
 
 ## Project structure
 
 ```
 src/
-  types.ts            the 4 shared data shapes (JobSpec · Offer · Deliverable · Verdict)
-  fixtures.ts         sample landing + SQL jobs
-  reputation.ts       seller track records (→ on-chain in Phase 4)
-  llm.ts              guarded gpt-4o-mini client (caps · fallback · off by default)
-  buyer/
-    scoring.ts        Competency 1 — the rubric
-    decision.ts       Competency 2 — winner / who to push
-    negotiate.ts      Competency 3 — the 3-round loop
-    verify/           Competency 4 — sql.ts (runs it for real) · landing.ts (checks + AI judge)
-    voice.ts          Competency 5 — natural-language commentary
-    runMarket.ts      Competency 6 — the whole job in one call
-  sellers/
-    mockSeller.ts     deterministic stand-in sellers (Phase 2 makes them real)
-contracts/Hello.sol   on-chain spike (real escrow contract lands in Phase 4)
-script/deploy-monad.sh
-docs/buyer-agent-design.md
+  buyer/        scoring, negotiation loop, verifiers (sql / landing / data), runMarket
+  sellers/      seller agents (AI bids inside code-enforced bounds), data-buying seller
+  market/       concurrent market sessions, shared seller pool
+  chain/        escrow + oracle clients, agent wallet manager, settlement engine
+  server.ts     API: markets, agents, registration, settlement
+contracts/      HandshakeEscrow.sol, DataOracle.sol
+test/           Foundry tests
+script/         one-command deploy scripts
+web/            React + Tailwind trading-floor UI (dark/light)
 ```
-
----
 
 ## Stack
 
-TypeScript · tsx · **Foundry** (forge/cast/anvil, run via WSL) · ethers.js · `node:sqlite` ·
-OpenAI `gpt-4o-mini` · **Monad testnet**.
+TypeScript · Node.js · React + Vite + Tailwind · ethers.js · Foundry (Solidity 0.8.24) · `node:sqlite` (grounded SQL verification) · OpenAI (`gpt-4o-mini`, guarded + fallbacks) · **Monad testnet**
