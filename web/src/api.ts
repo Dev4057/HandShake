@@ -1,57 +1,79 @@
-import type { Agent, MarketRun, MarketSession, Settlement } from "./types";
+import type { Agent, MarketSession, Settlement } from "./types";
 
-async function post<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
-  return r.json();
+/** Same-origin "/api" by default (Vite proxies it in dev); override for a hosted backend. */
+const BASE: string = import.meta.env.VITE_API_URL ?? "";
+
+export class ApiError extends Error {
+  status: number | null;
+  constructor(message: string, status: number | null = null) {
+    super(message);
+    this.status = status;
+  }
 }
 
-async function get<T>(url: string): Promise<T> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${url} → ${r.status}`);
-  return r.json();
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  let r: Response;
+  try {
+    r = await fetch(`${BASE}${path}`, init);
+  } catch {
+    throw new ApiError("Backend unreachable — is `npm run server` running?");
+  }
+  if (!r.ok) {
+    let detail = `${r.status}`;
+    try {
+      const body = (await r.json()) as { error?: string };
+      if (body.error) detail = body.error;
+    } catch { /* non-JSON error body */ }
+    throw new ApiError(detail, r.status);
+  }
+  return r.json() as Promise<T>;
 }
 
-export const runMarket = (jobType: "landing" | "sql") =>
-  post<MarketRun>("/api/market/run", { jobType });
+const post = <T,>(path: string, body: unknown) =>
+  req<T>(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-export const getAgents = () => get<{ agents: Agent[] }>("/api/agents");
+export const getAgents = () => req<{ agents: Agent[] }>("/api/agents");
 
-export const registerAgent = (name: string, skills: string, role: "seller" | "buyer", wallet?: string) =>
-  post<{ agent: Agent }>("/api/register", { name, skills, role, wallet });
+export const assignAgent = (id: string, owner: string) =>
+  post<{ agent: Agent }>(`/api/agents/${encodeURIComponent(id)}/assign`, { owner });
+
+export interface SellerStrategy {
+  serviceTypes: ("landing" | "sql" | "data")[];
+  startPrice: number;
+  floorPrice: number;
+  deliveryHours: number;
+  personality?: string;
+}
+
+export const registerAgent = (p: {
+  name: string;
+  skills: string;
+  role: "seller" | "buyer";
+  owner: string;
+  wallet?: string;
+  strategy?: SellerStrategy;
+}) => post<{ agent: Agent; joinsPool: boolean }>("/api/register", p);
 
 export const openMarkets = () => post<{ sessions: MarketSession[] }>("/api/markets/open", {});
-export const getMarkets = () => get<{ sessions: MarketSession[] }>("/api/markets");
+export const openMarketFor = (buyerId: string) =>
+  post<{ session: MarketSession }>("/api/markets/open-one", { buyerId });
+export const getMarkets = () => req<{ sessions: MarketSession[] }>("/api/markets");
 
-export const settleSession = (s: MarketSession) =>
-  post<Settlement>("/api/settle", {
-    jobId: s.job.id,
-    winnerId: s.winnerId,
-    sellerIds: s.bidders,
-    winnerPrice: s.rounds.at(-1)?.offers.find((o) => o.sellerId === s.winnerId)?.price ?? s.job.budget,
-    budget: s.job.budget,
-    pass: s.verdict?.pass ?? false,
-    score: s.verdict?.score ?? 0,
-    buyerId: s.buyer.id,
-  });
+export interface BuyerAgent {
+  id: string;
+  name: string;
+  scripted: boolean;
+  wallet: string | null;
+  owner: string;
+  job: MarketSession["job"];
+}
+export const getBuyers = () => req<{ buyers: BuyerAgent[] }>("/api/buyers");
 
-export const getHealth = () => get<{ ok: boolean; aiEnabled: boolean }>("/api/health");
+/** Settlement is derived server-side from the session — the client only names it. */
+export const settleSession = (sessionId: string) => post<Settlement>("/api/settle", { sessionId });
+export const getSettle = (id: string) => req<Settlement>(`/api/settle/${id}`);
 
-export const getChain = () => get<{ escrow: string | null; explorer: string | null }>("/api/chain");
+export const getHealth = () => req<{ ok: boolean; aiEnabled: boolean }>("/api/health");
+export const getChain = () => req<{ escrow: string | null; explorer: string | null }>("/api/chain");
 
-export const startSettle = (run: MarketRun) =>
-  post<Settlement>("/api/settle", {
-    jobId: run.job.id,
-    winnerId: run.winnerId,
-    sellerIds: run.rounds[0]?.offers.map((o) => o.sellerId) ?? [],
-    winnerPrice: run.rounds.at(-1)?.offers.find((o) => o.sellerId === run.winnerId)?.price ?? run.job.budget,
-    budget: run.job.budget,
-    pass: run.verdict.pass,
-    score: run.verdict.score,
-  });
-
-export const getSettle = (id: string) => get<Settlement>(`/api/settle/${id}`);
+export const eventsUrl = () => `${BASE}/api/events`;

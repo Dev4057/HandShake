@@ -1,7 +1,8 @@
 {
   "network": "monad-testnet",
   "chainId": 10143,
-  "contract": "HandshakeEscrow",
-  "address": "0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496",
-  "explorer": "https://testnet.monadexplorer.com/address/0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496"
+  "contract": "HandshakeEscrowV2",
+  "address": "0x33355d6d221A29AB9a4e461C04600c48a5798418",
+  "treasury": "0xDEb86880A141Ee3164f3F0F7515CbDc642AAF541",
+  "explorer": "https://testnet.monadexplorer.com/address/0x33355d6d221A29AB9a4e461C04600c48a5798418"
 }

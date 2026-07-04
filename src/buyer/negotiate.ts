@@ -29,6 +29,10 @@ export interface NegotiationResult {
 export interface NegotiationOpts {
   totalRounds?: number;
   scriptedBuyer?: boolean; // true = buyer voice uses deterministic fallback (no AI)
+  /** Called as each round completes — lets the UI stream the negotiation live. */
+  onRound?: (rl: RoundLog) => void;
+  /** Minimum ms per round — paces instant (scripted) negotiations so viewers can follow. */
+  paceMs?: number;
 }
 
 export async function runNegotiation(
@@ -68,7 +72,9 @@ export async function runNegotiation(
     draft.managerLine = (await managerLine(job, draft, { scripted: opts.scriptedBuyer })).text;
 
     rounds.push(draft);
+    opts.onRound?.(draft);
     prev = draft;
+    if (opts.paceMs) await new Promise((r) => setTimeout(r, opts.paceMs));
   }
 
   return { winner: rounds[rounds.length - 1].scored[0], rounds };

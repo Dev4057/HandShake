@@ -10,7 +10,9 @@ const ThemeCtx = createContext<{ theme: Theme; toggle: () => void }>({
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem("hs-theme") as Theme | null;
-    return saved ?? "dark";
+    if (saved) return saved;
+    // no saved choice: follow the OS, defaulting dark when undetectable
+    return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
   });
 
   useEffect(() => {

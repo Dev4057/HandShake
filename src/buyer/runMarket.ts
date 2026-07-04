@@ -21,25 +21,44 @@ export interface MarketResult {
   verdict: Verdict;
 }
 
+export type MarketPhase = "negotiating" | "delivering" | "verifying";
+
 export async function runMarket(
   job: JobSpec,
   sellerPool: Seller[],
   reputations: Map<string, Reputation>,
-  opts: { scriptedBuyer?: boolean } = {},
+  opts: {
+    scriptedBuyer?: boolean;
+    onRound?: (rl: import("./negotiate.js").RoundLog) => void;
+    onPhase?: (phase: MarketPhase, detail?: string) => void;
+    paceMs?: number;
+  } = {},
 ): Promise<MarketResult> {
   // 0. bid/no-bid — only sellers who choose this job enter the market
   const sellers = sellerPool.filter((s) => s.bids(job));
   if (sellers.length === 0) throw new Error(`No sellers bid on job ${job.id}`);
 
-  // 1-3. negotiate and pick a winner
-  const negotiation = await runNegotiation(job, sellers, reputations, { scriptedBuyer: opts.scriptedBuyer });
+  // 1-3. negotiate and pick a winner (rounds stream out via onRound)
+  opts.onPhase?.("negotiating");
+  const negotiation = await runNegotiation(job, sellers, reputations, {
+    scriptedBuyer: opts.scriptedBuyer,
+    onRound: opts.onRound,
+    paceMs: opts.paceMs,
+  });
   const winnerId = negotiation.winner.offer.sellerId;
 
+  // pacing: deterministic delivery/verification are instant — hold each phase
+  // long enough for viewers to actually see it happen
+  const pace = () => (opts.paceMs ? new Promise((r) => setTimeout(r, opts.paceMs)) : Promise.resolve());
+
   // 7. delegate the work to the winner (the agent actually produces it)
+  opts.onPhase?.("delivering", winnerId);
   const winner = sellers.find((s) => s.id === winnerId)!;
-  const deliverable = await winner.deliver(job);
+  const [deliverable] = await Promise.all([winner.deliver(job), pace()]);
 
   // 8. trust, but verify — the buyer's own check, independent of the seller's
+  opts.onPhase?.("verifying", winnerId);
+  await pace();
   const verdict = verify(job, deliverable);
 
   return { job, negotiation, winnerId, deliverable, verdict };

@@ -27,23 +27,6 @@ export interface Verdict {
 
 export interface Reputation { sellerId: string; jobs: number; successes: number; score: number }
 
-export interface MarketRun {
-  job: {
-    id: string;
-    type: "landing" | "sql";
-    task: string;
-    budget: number;
-    requirements: string[];
-    priorities: { quality: number; speed: number; price: number };
-  };
-  winnerId: string;
-  verdict: Verdict;
-  deliverable: { jobId: string; sellerId: string; content: string };
-  rounds: Round[];
-  aiEnabled: boolean;
-  reputations: Record<string, Reputation>;
-}
-
 export type StepState = "pending" | "running" | "done" | "error";
 
 export interface SettlementStep {
@@ -79,11 +62,16 @@ export interface Agent {
   skills: string;
   wallet: string;
   reputation: Reputation;
+  /** Account handle that registered this agent; house roster = "Handshake". */
+  owner: string;
+  /** Sellers: job types this agent bids on. */
+  serviceTypes?: ("landing" | "sql" | "data")[];
 }
 
-/** One market session from the multi-market API. */
+/** One market session — marketplace and trading floor share this shape. */
 export interface MarketSession {
   id: string;
+  kind: "market" | "floor";
   reputations: Record<string, Reputation>;
   buyer: { id: string; name: string; scripted: boolean };
   job: {
@@ -95,10 +83,20 @@ export interface MarketSession {
     requirements: string[];
   };
   status: "running" | "done" | "error";
+  phase: "opening" | "negotiating" | "delivering" | "verifying" | "settled";
+  phaseDetail: string | null;
   bidders: string[];
   error?: string;
   winnerId: string | null;
   verdict: Verdict | null;
   deliverable: { jobId: string; sellerId: string; content: string } | null;
+  settlementId: string | null;
+  /** Compact on-chain settlement state — pushed live to BOTH sides. */
+  settlement: {
+    status: "running" | "done" | "error";
+    pass: boolean;
+    txUrl: string | null;
+    collected: boolean;
+  } | null;
   rounds: Round[];
 }

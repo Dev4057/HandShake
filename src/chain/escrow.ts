@@ -13,13 +13,23 @@ const deployment = JSON.parse(readFileSync(new URL("../../deployments.json", imp
 };
 
 const ABI = [
-  "function openJob(bytes32 jobId) payable",
+  // HandshakeEscrowV2: openJob takes a deadline; payouts are pull-based (withdraw)
+  "function openJob(bytes32 jobId, uint64 deadline) payable",
   "function postBond(bytes32 jobId) payable",
   "function settle(bytes32 jobId, address winner, uint256 winnerPrice, bool pass, uint8 score)",
-  "function getJob(bytes32 jobId) view returns (address buyer, uint256 budget, bool exists, bool settled, uint256 bonderCount)",
+  "function reclaimBond(bytes32 jobId)",
+  "function cancelJob(bytes32 jobId)",
+  "function withdraw()",
+  "function withdrawable(address) view returns (uint256)",
+  "function getJob(bytes32 jobId) view returns (address buyer, uint256 budget, uint64 deadline, bool exists, bool settled, uint256 bonderCount)",
   "function bondOf(bytes32 jobId, address seller) view returns (uint256)",
   "function reputation(address) view returns (uint256 jobsWon, uint256 jobsPassed, uint256 scoreSum)",
 ];
+
+/** Default job lifetime: after this, sellers reclaim bonds and the buyer can cancel. */
+export const JOB_TTL_SECONDS = 24 * 60 * 60;
+
+export const defaultDeadline = () => BigInt(Math.floor(Date.now() / 1000) + JOB_TTL_SECONDS);
 
 export async function signer(): Promise<ethers.Wallet> {
   const pk = process.env.PRIVATE_KEY;
@@ -36,8 +46,18 @@ export const jobIdOf = (id: string): string => ethers.id(id);
 
 export const escrowAddress = () => deployment.address;
 
-export async function openJob(id: string, budgetEth: string): Promise<string> {
-  const tx = await escrow(await signer()).openJob(jobIdOf(id), { value: ethers.parseEther(budgetEth) });
+export async function openJob(id: string, budgetEth: string, deadline: bigint = defaultDeadline()): Promise<string> {
+  const tx = await escrow(await signer()).openJob(jobIdOf(id), deadline, { value: ethers.parseEther(budgetEth) });
+  await tx.wait();
+  return tx.hash;
+}
+
+/** Pull this wallet's accumulated payouts (V2 credits instead of pushing funds). */
+export async function withdrawPayout(wallet: ethers.Wallet): Promise<string | null> {
+  const esc = escrow(wallet);
+  const owed: bigint = await esc.withdrawable(wallet.address);
+  if (owed === 0n) return null;
+  const tx = await esc.withdraw();
   await tx.wait();
   return tx.hash;
 }

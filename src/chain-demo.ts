@@ -9,7 +9,7 @@ import { LANDING_JOB } from "./fixtures.js";
 import { MockSeller } from "./sellers/mockSeller.js";
 import { seedReputations } from "./reputation.js";
 import { runMarket } from "./buyer/runMarket.js";
-import { signer, openJob, postBond, settle, reputationOf, escrowAddress, txUrl } from "./chain/escrow.js";
+import { signer, openJob, postBond, settle, withdrawPayout, reputationOf, escrowAddress, txUrl } from "./chain/escrow.js";
 
 // tiny on-chain amounts (the $480 etc. in the market are display units)
 const BUDGET = "0.01";
@@ -42,6 +42,9 @@ console.log(`▶ postBond (${BOND} MON)...`);
 console.log(`  ${txUrl(await postBond(jobId, BOND))}`);
 console.log(`▶ settle (${result.verdict.pass ? "PASS -> pay + reputation++" : "FAIL -> refund + slash"})...`);
 console.log(`  ${txUrl(await settle(jobId, me.address, PRICE, result.verdict.pass, result.verdict.score))}`);
+console.log(`▶ withdraw (V2 pull payments — collect the credited payout)...`);
+const wHash = await withdrawPayout(me);
+console.log(`  ${wHash ? txUrl(wHash) : "nothing owed"}`);
 
 // 3. read reputation back from chain
 const after = await reputationOf(me.address);

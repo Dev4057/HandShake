@@ -11,33 +11,95 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+:root {
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  /* categorical chart palette — CVD-validated on white (light mode) */
+  --chart-1: #836ef9;
+  --chart-2: #0d9488;
+  --chart-3: #d97706;
+  --chart-4: #db2777;
+}
+.dark {
+  /* re-validated against the dark card surface (#131318) */
+  --chart-1: #836ef9;
+  --chart-2: #0d9488;
+  --chart-3: #d97706;
+  --chart-4: #ec4899;
+}
+
 html {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* app background — subtle brand glow, light + dark */
+/* app background — quiet depth, one brand glow, never a gradient wash */
 body {
   min-height: 100vh;
   background:
-    radial-gradient(900px 500px at 85% -10%, color-mix(in oklab, var(--color-brand) 14%, transparent), transparent 70%),
+    radial-gradient(1100px 520px at 80% -12%, color-mix(in oklab, var(--color-brand) 10%, transparent), transparent 70%),
     #fafafa;
-  color: #0a0a0a;
+  color: #111113;
 }
 :where(.dark) body {
   background:
-    radial-gradient(900px 500px at 85% -10%, color-mix(in oklab, var(--color-brand) 20%, transparent), transparent 70%),
-    #08080b;
-  color: #f4f4f5;
+    radial-gradient(1100px 520px at 80% -12%, color-mix(in oklab, var(--color-brand) 16%, transparent), transparent 70%),
+    #0a0a0e;
+  color: #ededf0;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-brand) 30%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-brand) 60%, transparent);
+  outline-offset: 2px;
 }
 
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* scrollbars */
-* { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, currentColor 20%, transparent) transparent; }
+* { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, currentColor 18%, transparent) transparent; }
 
-@keyframes hs-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.hs-rise { animation: hs-rise 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-@keyframes hs-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
-.hs-pulse { animation: hs-pulse 1.4s ease-in-out infinite; }
+/* ---- motion: one easing curve, used everywhere ---- */
+
+@keyframes hs-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.hs-rise { animation: hs-rise 0.4s var(--ease) both; }
+
+@keyframes hs-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+.hs-pulse { animation: hs-pulse 1.6s var(--ease) infinite; }
+
+/* price/number flash when a value changes — the terminal tick */
+@keyframes hs-flash {
+  0%   { background-color: color-mix(in oklab, var(--color-brand) 22%, transparent); }
+  100% { background-color: transparent; }
+}
+.hs-flash { animation: hs-flash 0.9s var(--ease) both; border-radius: 6px; }
+
+/* live log cursor */
+@keyframes hs-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.hs-blink { animation: hs-blink 1.1s steps(1) infinite; }
+
+/* marketplace ticker strip */
+@keyframes hs-ticker {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.hs-ticker { animation: hs-ticker 28s linear infinite; }
+.hs-ticker:hover { animation-play-state: paused; }
+
+/* motion sensitivity: kill every decorative animation */
+@media (prefers-reduced-motion: reduce) {
+  .hs-rise, .hs-pulse, .hs-flash, .hs-blink, .hs-ticker {
+    animation: none;
+  }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

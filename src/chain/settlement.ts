@@ -9,9 +9,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { ethers } from "ethers";
-import { escrow, signer, jobIdOf, reputationOf, escrowAddress, type OnChainRep } from "./escrow.js";
+import { escrow, signer, jobIdOf, reputationOf, escrowAddress, defaultDeadline, withdrawPayout, type OnChainRep } from "./escrow.js";
 import { loadSellerWallets, fundSellerWallets, BUYER_FUNDING, type SellerWallet } from "./wallets.js";
-import { txUrl, addrUrl } from "../chain.js";
+import { txUrl, addrUrl, resetProvider } from "../chain.js";
+import { emitSettled, emitMarketsChanged } from "../market/events.js";
 
 /** Tiny real amounts — the $ figures in the market are display units. */
 const BUDGET = ethers.parseEther("0.01");
@@ -84,18 +85,23 @@ export function startSettlement(req: SettleRequest): Settlement {
       })),
       {
         key: "settle",
-        label: req.pass ? "Settle — pay winner, return bonds" : "Settle — refund buyer, slash bond",
+        label: req.pass ? "Settle — pay winner, return bonds" : "Settle — refund buyer, slash bond to treasury",
         state: "pending",
       },
+      { key: "collect", label: "Collect payouts (pull payments)", state: "pending" },
       { key: "rep", label: "Read reputation from chain", state: "pending" },
     ],
   };
   settlements.set(id, s);
+  emitMarketsChanged(); // both sides see "settlement in progress" immediately
   run(s, req).catch((e) => {
     s.status = "error";
     s.error = (e as Error).message;
     const running = s.steps.find((st) => st.state === "running");
     if (running) running.state = "error";
+    // the endpoint may have gone bad mid-run — a retry starts from a fresh probe
+    resetProvider();
+    emitMarketsChanged();
   });
   return s;
 }
@@ -113,16 +119,21 @@ async function tightGas(est: bigint): Promise<{ gasLimit: bigint }> {
 }
 
 /**
- * One retry after a pause — absorbs Monad's lagged-balance races on freshly
- * funded low-balance wallets ("Signer had insufficient balance").
+ * Retries with a pause — absorbs Monad's lagged-balance races on freshly
+ * funded low-balance wallets ("Signer had insufficient balance") and
+ * transient RPC timeouts.
  */
-async function withRetry<T>(send: () => Promise<T>): Promise<T> {
-  try {
-    return await send();
-  } catch {
-    await new Promise((r) => setTimeout(r, 4_000));
-    return send();
+async function withRetry<T>(send: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await send();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 4_000));
+    }
   }
+  throw lastErr;
 }
 
 async function run(s: Settlement, req: SettleRequest): Promise<void> {
@@ -146,7 +157,8 @@ async function run(s: Settlement, req: SettleRequest): Promise<void> {
   const winner = sellers.find((w) => w.sellerId === req.winnerId)!;
   s.winnerAddress = winner.wallet.address;
   s.winnerAddressUrl = addrUrl(winner.wallet.address);
-  s.reputationBefore = await reputationOf(winner.wallet.address);
+  // best-effort: a slow RPC read must never abort a settlement
+  s.reputationBefore = await withRetry(() => reputationOf(winner.wallet.address), 2).catch(() => undefined);
 
   // 1. fund seller wallets that are low (+ the buyer's own wallet, more generously)
   const fund = step(s, "fund");
@@ -168,13 +180,14 @@ async function run(s: Settlement, req: SettleRequest): Promise<void> {
     fund.txUrl = txUrl(funded[0].txHash);
   }
 
-  // 2. buyer locks the budget
+  // 2. buyer locks the budget (with a deadline — funds can never be stuck forever)
   const open = step(s, "open");
   open.state = "running";
   const buyerEscrow = escrow(buyer);
+  const deadline = defaultDeadline();
   const openTx = await withRetry(async () => {
-    const est = await buyerEscrow.openJob.estimateGas(chainJobId, { value: BUDGET });
-    const tx = await buyerEscrow.openJob(chainJobId, { value: BUDGET, ...(await tightGas(est)) });
+    const est = await buyerEscrow.openJob.estimateGas(chainJobId, deadline, { value: BUDGET });
+    const tx = await buyerEscrow.openJob(chainJobId, deadline, { value: BUDGET, ...(await tightGas(est)) });
     await tx.wait();
     return tx;
   });
@@ -213,13 +226,40 @@ async function run(s: Settlement, req: SettleRequest): Promise<void> {
   settleStep.state = "done";
   settleStep.txHash = tx.hash;
   settleStep.txUrl = txUrl(tx.hash);
+  emitMarketsChanged(); // the on-chain verdict is final — notify both sides
 
-  // 5. read reputation back
+  // 5. pull payments: every participant withdraws its credited payout
+  const collect = step(s, "collect");
+  collect.state = "running";
+  const participants = new Map<string, ethers.Wallet>([[buyer.address, buyer]]);
+  for (const sw of sellers) participants.set(sw.wallet.address, sw.wallet);
+  let collected = 0;
+  let lastTx: string | null = null;
+  for (const w of participants.values()) {
+    const hash = await withRetry(() => withdrawPayout(w));
+    if (hash) {
+      collected++;
+      lastTx = hash;
+    }
+  }
+  collect.state = "done";
+  collect.detail = collected ? `${collected} wallet(s) withdrew` : "nothing owed";
+  if (lastTx) {
+    collect.txHash = lastTx;
+    collect.txUrl = txUrl(lastTx);
+  }
+
+  // 6. read reputation back (best-effort — the money already moved)
   const rep = step(s, "rep");
   rep.state = "running";
-  s.reputationAfter = await reputationOf(winner.wallet.address);
+  s.reputationAfter = await withRetry(() => reputationOf(winner.wallet.address), 2).catch(() => undefined);
   rep.state = "done";
-  rep.detail = `won ${s.reputationAfter.jobsWon} · passed ${s.reputationAfter.jobsPassed} · avg ${s.reputationAfter.avgScore.toFixed(1)}`;
+  rep.detail = s.reputationAfter
+    ? `won ${s.reputationAfter.jobsWon} · passed ${s.reputationAfter.jobsPassed} · avg ${s.reputationAfter.avgScore.toFixed(1)}`
+    : "rep read unavailable (RPC) — settlement itself succeeded";
 
   s.status = "done";
+  // feed the fresh on-chain record back into the live scoring map
+  if (s.reputationAfter) emitSettled(req.winnerId, s.reputationAfter);
+  emitMarketsChanged(); // payment collected — the seller side gets the news live
 }

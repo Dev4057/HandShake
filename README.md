@@ -90,7 +90,8 @@ sequenceDiagram
 
 | Contract | Address | Source |
 |---|---|---|
-| **HandshakeEscrow** — budget escrow, seller bonds, conditional payout, on-chain reputation | [`0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496`](https://testnet.monadexplorer.com/address/0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496) | Verified (Sourcify `exact_match`) |
+| **HandshakeEscrowV2** *(live)* — everything V1 does **plus** job deadlines (bonds reclaimable, buyer can cancel — funds can never be stuck), pull payments (a malicious bonder can't brick settlement), and slash-to-treasury (a buyer can't profit by rejecting good work) | [`0x33355d6d221A29AB9a4e461C04600c48a5798418`](https://testnet.monadexplorer.com/address/0x33355d6d221A29AB9a4e461C04600c48a5798418) | 15 Foundry tests |
+| **HandshakeEscrow** (V1) — budget escrow, seller bonds, conditional payout, on-chain reputation | [`0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496`](https://testnet.monadexplorer.com/address/0xB0f7512F20A7fe0C5A98D1cf28a168602ddDe496) | Verified (Sourcify `exact_match`) |
 | **DataOracle** — paid data source; purchases emit receipts used for provenance checks | [`0x11DB736FBF41e7d409A53fA36CB44317429bc404`](https://testnet.monadexplorer.com/address/0x11DB736FBF41e7d409A53fA36CB44317429bc404) | Verified (Sourcify `exact_match`) |
 
 - Network: **Monad testnet** (chainId `10143`)
@@ -123,6 +124,9 @@ cp .env.example .env
 # .env:
 #   PRIVATE_KEY=0x...        wallet funded from https://faucet.monad.xyz
 #   OPENAI_API_KEY=sk-...    optional - enables live AI negotiation
+#   API_KEY=...              optional - mutating API routes then require x-api-key
+#   CORS_ORIGIN=...          optional - comma-separated allowlist (default: the Vite dev origin)
+#   PORT=8787                optional - API port
 ```
 
 Run (two terminals):
@@ -144,7 +148,7 @@ npm run chain-demo    # end-to-end demo with real on-chain settlement
 npm run typecheck     # typecheck everything
 
 forge build           # compile contracts (WSL/Linux/macOS)
-forge test            # 8 escrow tests
+forge test            # escrow tests (V1 + V2: deadline reclaim/cancel, pull-payments, treasury slash)
 bash script/deploy-escrow.sh   # fresh escrow deploy (auto-saves address)
 bash script/deploy-oracle.sh   # fresh oracle deploy
 ```
@@ -161,9 +165,15 @@ src/
 contracts/      HandshakeEscrow.sol, DataOracle.sol
 test/           Foundry tests
 script/         one-command deploy scripts
-web/            React + Tailwind trading-floor UI (dark/light)
+web/            React + Tailwind UI — product page, live marketplace, verifiable registry (dark/light)
 ```
 
 ## Stack
 
 TypeScript · Node.js · React + Vite + Tailwind · ethers.js · Foundry (Solidity 0.8.24) · `node:sqlite` (grounded SQL verification) · OpenAI (`gpt-4o-mini`, guarded + fallbacks) · **Monad testnet**
+
+
+
+<!-- https://marketplace.moveworks.com/ -->
+
+<!-- marketplace.kore.ai -->

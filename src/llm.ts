@@ -16,11 +16,25 @@ import OpenAI from "openai";
 
 const MODEL = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
 const AI_ENABLED = process.env.USE_AI === "1" && !!process.env.OPENAI_API_KEY;
-const MAX_CALLS = Number(process.env.AI_MAX_CALLS ?? 40); // full run w/ 3 AI sellers ≈ 15 calls
+// Rolling hourly budget — guards against runaway loops without permanently
+// degrading a long-running server to canned fallbacks. One full "open all
+// markets" uses ~40 calls; 150/hour ≈ three full market opens + floor runs.
+const MAX_CALLS_PER_HOUR = Number(process.env.AI_MAX_CALLS ?? 150);
+const WINDOW_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_TOKENS = 250;
 
 let callCount = 0;
+let windowStart = Date.now();
 let totalTokens = 0;
+
+function budgetLeft(): boolean {
+  const now = Date.now();
+  if (now - windowStart >= WINDOW_MS) {
+    windowStart = now;
+    callCount = 0;
+  }
+  return callCount < MAX_CALLS_PER_HOUR;
+}
 let client: OpenAI | null = null;
 const getClient = () => (client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
@@ -37,7 +51,7 @@ export interface GenOpts {
 }
 
 export async function generate(opts: GenOpts): Promise<{ text: string; usedAI: boolean }> {
-  if (opts.disabled || !AI_ENABLED || callCount >= MAX_CALLS) return { text: opts.fallback, usedAI: false };
+  if (opts.disabled || !AI_ENABLED || !budgetLeft()) return { text: opts.fallback, usedAI: false };
   callCount++;
   try {
     const messages = [

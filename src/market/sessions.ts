@@ -3,8 +3,11 @@
  *
  * A MarketSession = one buyer + one job + its negotiation + its verdict.
  * Three buyers post three jobs into ONE shared seller pool; each seller makes
- * its own bid/no-bid call per job. Sessions run concurrently and are polled by
- * the UI. Buyer #1 is a real AI buyer; #2 and #3 are the SAME code, scripted.
+ * its own bid/no-bid call per job. Sessions run concurrently; every state
+ * change is pushed to the UI live over SSE (see market/events.ts).
+ *
+ * The Trading Floor runs the SAME engine: a single-buyer session with
+ * kind:"floor", excluded from the marketplace listing.
  */
 import { randomUUID } from "node:crypto";
 import type { JobSpec, Reputation } from "../types.js";
@@ -13,8 +16,12 @@ import { SellerAgent } from "../sellers/sellerAgent.js";
 import { DataScoutAgent } from "../sellers/dataScout.js";
 import { verifyReceipt } from "../chain/oracle.js";
 import { runMarket, type MarketResult } from "../buyer/runMarket.js";
+import { aiJudgeLanding } from "../buyer/verify/landing.js";
 import { LANDING_JOB, SQL_JOB, DATA_JOB } from "../fixtures.js";
-import { seedReputations } from "../reputation.js";
+import { seedReputations, refreshReputationsFromChain, mergeChainRep } from "../reputation.js";
+import { listRegisteredSellerConfigs } from "./sellerRegistry.js";
+import { bus, emitMarketsChanged } from "./events.js";
+import type { OnChainRep } from "../chain/escrow.js";
 
 // ---- buyers ----------------------------------------------------------------
 
@@ -72,6 +79,8 @@ export function makeSellerPool(): Seller[] {
       serviceTypes: ["data"], scripted: true,
       startPrice: 80, floorPrice: 60, startDelivery: 3, bestDelivery: 2.5, concession: 0.3,
     }),
+    // user-registered agents join the live pool with their own strategies
+    ...listRegisteredSellerConfigs().map((cfg) => new SellerAgent(cfg)),
   ];
 }
 
@@ -79,16 +88,31 @@ export function makeSellerPool(): Seller[] {
 
 export interface MarketSession {
   id: string;
+  kind: "market" | "floor";
   buyer: BuyerConfig;
   status: "running" | "done" | "error";
   startedAt: number;
   result?: MarketResult;
   error?: string;
   bidders: string[]; // sellers that chose to enter
+  /** Live progress — rounds appear here as they complete, before result exists. */
+  liveRounds: import("../buyer/negotiate.js").RoundLog[];
+  phase: "opening" | "negotiating" | "delivering" | "verifying" | "settled";
+  phaseDetail?: string; // e.g. which seller is delivering
+  /** Set once an on-chain settlement has been started — blocks double-settles. */
+  settlementId?: string;
 }
 
 const sessions = new Map<string, MarketSession>();
 const reputations: Map<string, Reputation> = seedReputations();
+
+// A settled market writes reputation on-chain; absorb it into the scoring map
+// immediately so the NEXT negotiation prices it in — the market has memory.
+bus.on("settled", ({ sellerId, rep }: { sellerId: string; rep: OnChainRep }) => {
+  if (rep.jobsWon === 0) return;
+  reputations.set(sellerId, mergeChainRep(seedReputations().get(sellerId), sellerId, rep));
+  emitMarketsChanged();
+});
 
 /** Buyer-side on-chain provenance check for delivered data reports. */
 async function checkProvenance(result: MarketResult) {
@@ -114,8 +138,64 @@ async function checkProvenance(result: MarketResult) {
 }
 
 export const getSession = (id: string) => sessions.get(id);
-export const listSessions = () => [...sessions.values()].sort((a, b) => b.startedAt - a.startedAt);
+export const listSessions = (kind?: MarketSession["kind"]) =>
+  [...sessions.values()]
+    .filter((s) => !kind || s.kind === kind)
+    .sort((a, b) => b.startedAt - a.startedAt);
 export const getReputations = () => reputations;
+
+/** Launch one session: create it, run the market engine, stream every change. */
+function startSession(buyer: BuyerConfig, pool: Seller[], kind: MarketSession["kind"]): MarketSession {
+  const session: MarketSession = {
+    id: randomUUID(),
+    kind,
+    buyer,
+    status: "running",
+    startedAt: Date.now(),
+    bidders: pool.filter((s) => s.bids(buyer.job)).map((s) => s.id),
+    liveRounds: [],
+    phase: "opening",
+  };
+  sessions.set(session.id, session);
+
+  runMarket(buyer.job, pool, reputations, {
+    scriptedBuyer: buyer.scripted,
+    // ALWAYS pace rounds and phases — negotiations are theatre as much as
+    // computation, and an instant (deterministic-fallback) market is unwatchable
+    paceMs: 3_000,
+    onRound: (rl) => {
+      session.liveRounds.push(rl);
+      emitMarketsChanged();
+    },
+    onPhase: (phase, detail) => {
+      session.phase = phase;
+      session.phaseDetail = detail;
+      emitMarketsChanged();
+    },
+  })
+    .then(async (result) => {
+      // landing pages: upgrade the deterministic verdict with the AI judge when AI is on
+      if (buyer.job.type === "landing") {
+        result.verdict = await aiJudgeLanding(buyer.job, result.deliverable);
+      }
+      // data jobs: buyer independently verifies PROVENANCE on-chain —
+      // did the seller really purchase this data, and does the value match?
+      if (buyer.job.type === "data" && result.verdict.pass) {
+        result.verdict = await checkProvenance(result);
+      }
+      session.result = result;
+      session.status = "done";
+      session.phase = "settled";
+      emitMarketsChanged();
+    })
+    .catch((e) => {
+      session.status = "error";
+      session.error = (e as Error).message;
+      emitMarketsChanged();
+    });
+
+  return session;
+}
 
 /**
  * Open one market per buyer; all negotiate concurrently.
@@ -124,31 +204,29 @@ export const getReputations = () => reputations;
  * and concurrent markets must not interleave it.
  */
 export function openAllMarkets(): MarketSession[] {
-  const pools = BUYERS.map(() => makeSellerPool());
-  const batch: MarketSession[] = BUYERS.map((buyer, i) => ({
-    id: randomUUID(),
-    buyer,
-    status: "running",
-    startedAt: Date.now(),
-    bidders: pools[i].filter((s) => s.bids(buyer.job)).map((s) => s.id),
-  }));
-
-  batch.forEach((session, i) => {
-    sessions.set(session.id, session);
-    runMarket(session.buyer.job, pools[i], reputations, { scriptedBuyer: session.buyer.scripted })
-      .then(async (result) => {
-        // data jobs: buyer independently verifies PROVENANCE on-chain —
-        // did the seller really purchase this data, and does the value match?
-        if (session.buyer.job.type === "data" && result.verdict.pass) {
-          result.verdict = await checkProvenance(result);
-        }
-        session.result = result;
-        session.status = "done";
-      })
-      .catch((e) => {
-        session.status = "error";
-        session.error = (e as Error).message;
-      });
-  });
+  // best-effort, non-blocking: pull real on-chain reputation into scoring
+  void refreshReputationsFromChain(reputations, makeSellerPool().map((s) => s.id)).then(emitMarketsChanged);
+  const batch = BUYERS.map((buyer) => startSession(buyer, makeSellerPool(), "market"));
+  emitMarketsChanged();
   return batch;
+}
+
+/** Buyer desk: open ONE buyer's market (the same engine, one session). */
+export function openMarketFor(buyerId: string): MarketSession | null {
+  const buyer = BUYERS.find((b) => b.id === buyerId);
+  if (!buyer) return null;
+  void refreshReputationsFromChain(reputations, makeSellerPool().map((s) => s.id)).then(emitMarketsChanged);
+  const session = startSession(buyer, makeSellerPool(), "market");
+  emitMarketsChanged();
+  return session;
+}
+
+/** Trading Floor: one live single-buyer market on the same engine. */
+export function openFloorMarket(jobType: "landing" | "sql"): MarketSession {
+  const job = jobType === "sql" ? SQL_JOB : LANDING_JOB;
+  const buyer: BuyerConfig = { id: "buyer-floor", name: "Floor Desk", scripted: false, wallet: "master", job };
+  void refreshReputationsFromChain(reputations, makeSellerPool().map((s) => s.id)).then(emitMarketsChanged);
+  const session = startSession(buyer, makeSellerPool(), "floor");
+  emitMarketsChanged();
+  return session;
 }

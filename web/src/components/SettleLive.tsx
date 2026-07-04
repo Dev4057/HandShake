@@ -3,18 +3,21 @@ import {
   Link2, Loader2, CheckCircle2, XCircle, Circle, ExternalLink, TrendingUp, Zap,
 } from "lucide-react";
 import type { Settlement, SettlementStep } from "../types";
-import { getSettle } from "../api";
-import { cn, subtle, chip, btnPrimary } from "../lib/ui";
+import { getSettle, settleSession } from "../api";
+import { cn, subtle, chip, btnPrimary, short } from "../lib/ui";
 
 const POLL_MS = 1200;
 
 export function SettleLive({
   pass,
-  start,
+  sessionId,
+  existingId,
   chain,
 }: {
   pass: boolean;
-  start: () => Promise<Settlement>;
+  sessionId: string;
+  /** Settlement already started for this session (e.g. page reloaded) — resume it. */
+  existingId?: string | null;
   chain?: { escrow: string; explorer: string };
 }) {
   const [settlement, setSettlement] = useState<Settlement | null>(null);
@@ -22,9 +25,8 @@ export function SettleLive({
   const [failed, setFailed] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
-
   function poll(id: string) {
+    if (timer.current) clearInterval(timer.current);
     timer.current = setInterval(async () => {
       try {
         const s = await getSettle(id);
@@ -36,13 +38,26 @@ export function SettleLive({
     }, POLL_MS);
   }
 
+  useEffect(() => {
+    if (existingId) {
+      getSettle(existingId)
+        .then((s) => {
+          setSettlement(s);
+          if (s.status === "running") poll(s.id);
+        })
+        .catch(() => {});
+    }
+    return () => { if (timer.current) clearInterval(timer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingId]);
+
   async function begin() {
     setStarting(true);
     setFailed(null);
     try {
-      const s = await start();
+      const s = await settleSession(sessionId);
       setSettlement(s);
-      poll(s.id);
+      if (s.status === "running") poll(s.id);
     } catch (e) {
       setFailed((e as Error).message);
     } finally {
@@ -82,7 +97,11 @@ export function SettleLive({
         )}
       </div>
 
-      {failed && <p className="text-xs text-red-600 dark:text-red-400">{failed}</p>}
+      {failed && (
+        <p className="text-xs text-red-600 dark:text-red-400">
+          Could not start settlement: {failed}
+        </p>
+      )}
 
       {!settlement && (
         <p className={cn("text-xs", subtle)}>
@@ -117,7 +136,7 @@ export function SettleLive({
               rel="noreferrer"
               className="ml-auto inline-flex items-center gap-1 font-mono text-[11px] text-brand-strong hover:underline dark:text-brand-soft"
             >
-              {settlement.winnerAddress?.slice(0, 6)}…{settlement.winnerAddress?.slice(-4)} <ExternalLink size={11} />
+              {short(settlement.winnerAddress ?? "")} <ExternalLink size={11} />
             </a>
           )}
         </div>

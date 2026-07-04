@@ -30,7 +30,7 @@ const RPC_CANDIDATES = [...new Set([
 
 function makeProvider(url: string): ethers.JsonRpcProvider {
   const req = new ethers.FetchRequest(url);
-  req.timeout = 20_000; // fail fast instead of ethers' 300s default
+  req.timeout = 45_000; // the official node gets slow under load; still far below ethers' 300s default
   return new ethers.JsonRpcProvider(req, ethers.Network.from(MONAD.chainId), {
     staticNetwork: true, // skip network-detection round-trips
     batchMaxCount: 1,    // some public RPCs reject batched requests
@@ -38,6 +38,16 @@ function makeProvider(url: string): ethers.JsonRpcProvider {
 }
 
 let cachedProvider: ethers.JsonRpcProvider | null = null;
+
+/**
+ * Drop the cached provider so the next getProvider() re-probes all endpoints.
+ * Call after repeated call failures — an endpoint that answered the boot-time
+ * probe can degrade later, and a cached-forever choice would never recover.
+ */
+export function resetProvider(): void {
+  cachedProvider?.destroy();
+  cachedProvider = null;
+}
 
 async function probe(url: string, timeoutMs: number): Promise<ethers.JsonRpcProvider> {
   const p = makeProvider(url);
@@ -53,20 +63,27 @@ async function probe(url: string, timeoutMs: number): Promise<ethers.JsonRpcProv
   }
 }
 
-/** Probe candidates in rounds with backoff — survives transient RPC flakiness. */
+/**
+ * Probe ALL candidates in parallel and use whichever answers first — on a
+ * congested testnet the "right" endpoint changes hour to hour, so racing
+ * beats a fixed preference order. Rounds with backoff survive total outages.
+ */
 export async function getProvider(): Promise<ethers.JsonRpcProvider> {
   if (cachedProvider) return cachedProvider;
   const ROUNDS = 3;
   for (let round = 1; round <= ROUNDS; round++) {
-    for (const url of RPC_CANDIDATES) {
-      try {
-        const p = await probe(url, 8_000);
-        console.log(`Monad RPC → ${url}`);
-        cachedProvider = p;
-        return p;
-      } catch {
-        /* try next candidate */
+    const attempts = RPC_CANDIDATES.map((url) => probe(url, 10_000).then((prov) => ({ prov, url })));
+    try {
+      const winner = await Promise.any(attempts);
+      console.log(`Monad RPC → ${winner.url}`);
+      cachedProvider = winner.prov;
+      // late finishers still hold sockets — release them
+      for (const a of attempts) {
+        a.then(({ prov }) => { if (prov !== winner.prov) prov.destroy(); }).catch(() => {});
       }
+      return winner.prov;
+    } catch {
+      /* every candidate failed this round */
     }
     if (round < ROUNDS) await new Promise((r) => setTimeout(r, 2_000 * round));
   }
