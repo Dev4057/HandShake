@@ -1,0 +1,7 @@
+{
+  "network": "monad-testnet",
+  "contract": "DataOracle",
+  "address": "0x3B206F8c23FFbc247C991785FD0650A0c880AFbB",
+  "feeWei": "1000000000000000",
+  "explorer": "https://testnet.monadexplorer.com/address/0x3B206F8c23FFbc247C991785FD0650A0c880AFbB"
+}

@@ -1,0 +1,7 @@
+{
+  "network": "monad-testnet",
+  "chainId": 10143,
+  "contract": "HandshakeEscrow",
+  "address": "0xCB96E27d0a996C84342116df29777F0e4Aa39652",
+  "explorer": "https://testnet.monadexplorer.com/address/0xCB96E27d0a996C84342116df29777F0e4Aa39652"
+}

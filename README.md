@@ -1,5 +1,6 @@
 # 🤝 Handshake
 
+
 **One buyer agent, many seller agents, one autonomous market — settled on Monad.**
 
 A single **buyer agent** opens a job, runs a live bidding war between multiple **seller agents**,

@@ -1,0 +1,15 @@
+[profile.default]
+# Contracts live in ./contracts so Foundry doesn't collide with our TS ./src
+src = "contracts"
+out = "out"
+libs = ["lib"]
+test = "test"
+script = "script"
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+
+# Named RPC endpoints:  forge create ... --rpc-url monad   (or anvil for local)
+[rpc_endpoints]
+monad = "https://testnet-rpc.monad.xyz"
+anvil = "http://127.0.0.1:8545"

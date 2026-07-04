@@ -1,0 +1,225 @@
+/**
+ * Settlement engine — runs the full on-chain sequence for a finished market and
+ * records progress step-by-step so the UI can render each transaction live:
+ *
+ *   fund sellers → openJob (buyer locks budget) → postBond ×N (each seller's OWN
+ *   wallet) → settle (pay/slash + reputation) → read reputation back.
+ *
+ * Kicked off via startSettlement(); the UI polls getSettlement(id) as steps land.
+ */
+import { randomUUID } from "node:crypto";
+import { ethers } from "ethers";
+import { escrow, signer, jobIdOf, reputationOf, escrowAddress, type OnChainRep } from "./escrow.js";
+import { loadSellerWallets, fundSellerWallets, BUYER_FUNDING, type SellerWallet } from "./wallets.js";
+import { txUrl, addrUrl } from "../chain.js";
+
+/** Tiny real amounts — the $ figures in the market are display units. */
+const BUDGET = ethers.parseEther("0.01");
+const BOND = ethers.parseEther("0.002");
+
+export type StepState = "pending" | "running" | "done" | "error";
+
+export interface SettlementStep {
+  key: string;
+  label: string;
+  state: StepState;
+  txHash?: string;
+  txUrl?: string;
+  detail?: string;
+}
+
+export interface Settlement {
+  id: string;
+  status: "running" | "done" | "error";
+  escrow: string;
+  escrowUrl: string;
+  buyerId?: string;
+  buyerAddress?: string;
+  buyerAddressUrl?: string;
+  winnerId: string;
+  winnerAddress?: string;
+  winnerAddressUrl?: string;
+  pass: boolean;
+  steps: SettlementStep[];
+  reputationBefore?: OnChainRep;
+  reputationAfter?: OnChainRep;
+  error?: string;
+}
+
+const settlements = new Map<string, Settlement>();
+
+export function getSettlement(id: string): Settlement | undefined {
+  return settlements.get(id);
+}
+
+export interface SettleRequest {
+  jobId: string;      // market job id (made unique per settlement internally)
+  winnerId: string;   // seller agent id, e.g. "PixelPro"
+  sellerIds: string[];
+  winnerPrice: number; // display units
+  budget: number;      // display units
+  pass: boolean;
+  score: number;       // 0-10
+  /** Which buyer settles this market. "master" uses the main wallet;
+   *  "own" gives this buyer its own auto-funded wallet (distinct address). */
+  buyer?: { id: string; wallet: "master" | "own" };
+}
+
+export function startSettlement(req: SettleRequest): Settlement {
+  const id = randomUUID();
+  const s: Settlement = {
+    id,
+    status: "running",
+    escrow: escrowAddress(),
+    escrowUrl: addrUrl(escrowAddress()),
+    winnerId: req.winnerId,
+    pass: req.pass,
+    steps: [
+      { key: "fund", label: "Fund seller wallets", state: "pending" },
+      { key: "open", label: "Buyer locks budget in escrow", state: "pending" },
+      ...req.sellerIds.map((sid) => ({
+        key: `bond:${sid}`,
+        label: `${sid} stakes bond`,
+        state: "pending" as StepState,
+      })),
+      {
+        key: "settle",
+        label: req.pass ? "Settle — pay winner, return bonds" : "Settle — refund buyer, slash bond",
+        state: "pending",
+      },
+      { key: "rep", label: "Read reputation from chain", state: "pending" },
+    ],
+  };
+  settlements.set(id, s);
+  run(s, req).catch((e) => {
+    s.status = "error";
+    s.error = (e as Error).message;
+    const running = s.steps.find((st) => st.state === "running");
+    if (running) running.state = "error";
+  });
+  return s;
+}
+
+function step(s: Settlement, key: string): SettlementStep {
+  return s.steps.find((st) => st.key === key)!;
+}
+
+/**
+ * Monad charges gas_limit × price (not gas used), so we estimate and add only a
+ * 10% buffer instead of letting ethers over-pad the limit. (monskills: gas)
+ */
+async function tightGas(est: bigint): Promise<{ gasLimit: bigint }> {
+  return { gasLimit: est + est / 10n };
+}
+
+/**
+ * One retry after a pause — absorbs Monad's lagged-balance races on freshly
+ * funded low-balance wallets ("Signer had insufficient balance").
+ */
+async function withRetry<T>(send: () => Promise<T>): Promise<T> {
+  try {
+    return await send();
+  } catch {
+    await new Promise((r) => setTimeout(r, 4_000));
+    return send();
+  }
+}
+
+async function run(s: Settlement, req: SettleRequest): Promise<void> {
+  // unique on-chain job id per settlement so repeat demos never collide
+  const chainJobId = jobIdOf(`${req.jobId}-${s.id.slice(0, 8)}`);
+
+  // resolve the settling buyer: master wallet, or this buyer's own wallet
+  let buyer: ethers.Wallet;
+  const ownWallet = req.buyer && req.buyer.wallet === "own";
+  if (ownWallet) {
+    const [bw] = await loadSellerWallets([req.buyer!.id]);
+    buyer = bw.wallet;
+  } else {
+    buyer = await signer();
+  }
+  s.buyerId = req.buyer?.id ?? "master";
+  s.buyerAddress = buyer.address;
+  s.buyerAddressUrl = addrUrl(buyer.address);
+
+  const sellers = await loadSellerWallets(req.sellerIds);
+  const winner = sellers.find((w) => w.sellerId === req.winnerId)!;
+  s.winnerAddress = winner.wallet.address;
+  s.winnerAddressUrl = addrUrl(winner.wallet.address);
+  s.reputationBefore = await reputationOf(winner.wallet.address);
+
+  // 1. fund seller wallets that are low (+ the buyer's own wallet, more generously)
+  const fund = step(s, "fund");
+  fund.state = "running";
+  const funded = await fundSellerWallets(sellers);
+  if (ownWallet) {
+    const buyerFunded = await fundSellerWallets(
+      [{ sellerId: req.buyer!.id, wallet: buyer }],
+      BUYER_FUNDING,
+    );
+    funded.push(...buyerFunded);
+  }
+  fund.state = "done";
+  fund.detail = funded.length
+    ? `topped up ${funded.map((f) => f.sellerId).join(", ")}`
+    : "all wallets already funded";
+  if (funded[0]) {
+    fund.txHash = funded[0].txHash;
+    fund.txUrl = txUrl(funded[0].txHash);
+  }
+
+  // 2. buyer locks the budget
+  const open = step(s, "open");
+  open.state = "running";
+  const buyerEscrow = escrow(buyer);
+  const openTx = await withRetry(async () => {
+    const est = await buyerEscrow.openJob.estimateGas(chainJobId, { value: BUDGET });
+    const tx = await buyerEscrow.openJob(chainJobId, { value: BUDGET, ...(await tightGas(est)) });
+    await tx.wait();
+    return tx;
+  });
+  open.state = "done";
+  open.txHash = openTx.hash;
+  open.txUrl = txUrl(openTx.hash);
+
+  // 3. every seller stakes a bond from its OWN wallet
+  for (const sw of sellers) {
+    const b = step(s, `bond:${sw.sellerId}`);
+    b.state = "running";
+    const sellerEscrow = escrow(sw.wallet);
+    const tx = await withRetry(async () => {
+      const est = await sellerEscrow.postBond.estimateGas(chainJobId, { value: BOND });
+      const t = await sellerEscrow.postBond(chainJobId, { value: BOND, ...(await tightGas(est)) });
+      await t.wait();
+      return t;
+    });
+    b.state = "done";
+    b.txHash = tx.hash;
+    b.txUrl = txUrl(tx.hash);
+    b.detail = sw.wallet.address;
+  }
+
+  // 4. settle — winner price proportional to the negotiated deal
+  const settleStep = step(s, "settle");
+  settleStep.state = "running";
+  const ratio = Math.min(1, req.winnerPrice / req.budget);
+  const priceWei = (BUDGET * BigInt(Math.round(ratio * 1000))) / 1000n;
+  const tx = await withRetry(async () => {
+    const est = await buyerEscrow.settle.estimateGas(chainJobId, winner.wallet.address, priceWei, req.pass, req.score);
+    const t = await buyerEscrow.settle(chainJobId, winner.wallet.address, priceWei, req.pass, req.score, await tightGas(est));
+    await t.wait();
+    return t;
+  });
+  settleStep.state = "done";
+  settleStep.txHash = tx.hash;
+  settleStep.txUrl = txUrl(tx.hash);
+
+  // 5. read reputation back
+  const rep = step(s, "rep");
+  rep.state = "running";
+  s.reputationAfter = await reputationOf(winner.wallet.address);
+  rep.state = "done";
+  rep.detail = `won ${s.reputationAfter.jobsWon} · passed ${s.reputationAfter.jobsPassed} · avg ${s.reputationAfter.avgScore.toFixed(1)}`;
+
+  s.status = "done";
+}

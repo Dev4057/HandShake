@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* class-based dark mode: we toggle .dark on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-brand: #836ef9;
+  --color-brand-strong: #6d54f0;
+  --color-brand-soft: #a394fb;
+  --font-sans: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* app background — subtle brand glow, light + dark */
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(900px 500px at 85% -10%, color-mix(in oklab, var(--color-brand) 14%, transparent), transparent 70%),
+    #fafafa;
+  color: #0a0a0a;
+}
+:where(.dark) body {
+  background:
+    radial-gradient(900px 500px at 85% -10%, color-mix(in oklab, var(--color-brand) 20%, transparent), transparent 70%),
+    #08080b;
+  color: #f4f4f5;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* scrollbars */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, currentColor 20%, transparent) transparent; }
+
+@keyframes hs-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.hs-rise { animation: hs-rise 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+@keyframes hs-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+.hs-pulse { animation: hs-pulse 1.4s ease-in-out infinite; }

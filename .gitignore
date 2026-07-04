@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+seller-wallets.json
+
+# Foundry
+out/
+cache/
+broadcast/
+lib/
