@@ -1,4 +1,4 @@
-import { WifiOff, ChevronLeft } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import { Header } from "./components/Header";
 import { WalletPicker } from "./components/WalletPicker";
 import { Home } from "./components/Home";
@@ -36,15 +36,6 @@ function Shell() {
   return (
     <div className="min-h-screen">
       <Header onHome={() => navigate("home")} connection={connection} />
-
-      {connection === "offline" && (
-        <div className="border-b border-red-500/20 bg-red-500/[0.06]">
-          <div className="mx-auto flex max-w-6xl items-center gap-2.5 px-5 py-2 text-xs font-medium text-red-700 dark:text-red-400">
-            <WifiOff size={13} strokeWidth={2.2} />
-            Backend unreachable — start it with <code className="rounded bg-red-500/10 px-1.5 py-0.5 font-mono">npm run server</code>. Reconnecting automatically…
-          </div>
-        </div>
-      )}
 
       <main className="mx-auto max-w-6xl px-5 py-8">
         {route.tab !== "home" && (
